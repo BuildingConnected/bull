@@ -1,5 +1,5 @@
 {
-  "name": "bull-new",
+  "name": "bull",
   "version": "3.4.1",
   "description": "Job manager",
   "main": "./index.js",
