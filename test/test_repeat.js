@@ -16,10 +16,11 @@ var MAX_INT = 2147483647;
 
 describe('repeat', function() {
   var queue;
+  var client;
 
   beforeEach(function() {
     this.clock = sinon.useFakeTimers();
-    var client = new redis();
+    client = new redis();
     return client.flushdb().then(function() {
       queue = utils.buildQueue('repeat', {
         settings: {
@@ -34,7 +35,9 @@ describe('repeat', function() {
 
   afterEach(function() {
     this.clock.restore();
-    return queue.close();
+    return queue.close().then(function() {
+      return client.quit();
+    });
   });
 
   it('should create multiple jobs if they have the same cron pattern', function(done) {
@@ -331,6 +334,52 @@ describe('repeat', function() {
     });
   });
 
+  it('should not re-add a repeatable job after it has been deleted', function() {
+    var _this = this;
+    var date = new Date('2017-02-07 9:24:00');
+    var nextTick = 2 * ONE_SECOND;
+    var repeat = { cron: '*/2 * * * * *' };
+    var nextRepeatableJob = queue.nextRepeatableJob;
+    this.clock.tick(date.getTime());
+
+    var afterRemoved = new Promise(function(resolve) {
+      queue.process(function() {
+        queue.nextRepeatableJob = function() {
+          var args = arguments;
+          // In order to simulate race condition
+          // Make removeRepeatables happen any time after a moveToX is called
+          return queue
+            .removeRepeatable(_.defaults({ jobId: 'xxxx' }, repeat))
+            .then(function() {
+              // nextRepeatableJob will now re-add the removed repeatable
+              return nextRepeatableJob.apply(queue, args);
+            })
+            .then(function(result) {
+              resolve();
+              return result;
+            });
+        };
+      });
+
+      queue
+        .add({ foo: 'bar' }, { repeat: repeat, jobId: 'xxxx' })
+        .then(function() {
+          _this.clock.tick(nextTick);
+        });
+
+      queue.on('completed', function() {
+        _this.clock.tick(nextTick);
+      });
+    });
+
+    return afterRemoved.then(function() {
+      return queue.getRepeatableJobs().then(function(jobs) {
+        // Repeatable job was recreated
+        expect(jobs.length).to.eql(0);
+      });
+    });
+  });
+
   it('should allow adding a repeatable job after removing it', function() {
     queue.process(function(/*job*/) {
       // dummy
@@ -443,5 +492,60 @@ describe('repeat', function() {
         }
       });
     }, done);
+  });
+
+  it('should use ".every" as a valid interval', function(done) {
+    var _this = this;
+    var date = new Date('2017-02-07 9:24:00');
+    this.clock.tick(date.getTime());
+    var nextTick = ONE_SECOND + 500;
+
+    queue
+      .add('repeat', { type: 'm' }, { repeat: { every: 2000 } })
+      .then(function() {
+        _this.clock.tick(ONE_SECOND);
+        return queue.add('repeat', { type: 's' }, { repeat: { every: 2000 } });
+      })
+      .then(function() {
+        _this.clock.tick(nextTick);
+      });
+
+    queue.process('repeat', function() {
+      // dummy
+    });
+
+    var prevType;
+    var counter = 0;
+    queue.on('completed', function(job) {
+      _this.clock.tick(nextTick);
+      if (prevType) {
+        expect(prevType).to.not.be.eql(job.data.type);
+      }
+      prevType = job.data.type;
+      counter++;
+      if (counter == 20) {
+        done();
+      }
+    });
+  });
+
+  it('should throw an error when using .cron and .every simutaneously', function(done) {
+    queue
+      .add(
+        'repeat',
+        { type: 'm' },
+        { repeat: { every: 5000, cron: '*/1 * * * * *' } }
+      )
+      .then(
+        function() {
+          throw new Error('The error was not thrown');
+        },
+        function(err) {
+          expect(err.message).to.be.eql(
+            'Both .cron and .every options are defined for this repeatable job'
+          );
+          done();
+        }
+      );
   });
 });

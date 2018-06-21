@@ -23,14 +23,16 @@ Promise.config({
 
 describe('Queue', function() {
   var sandbox = sinon.sandbox.create();
+  var client;
 
   beforeEach(function() {
-    var client = new redis();
+    client = new redis();
     return client.flushdb();
   });
 
   afterEach(function() {
     sandbox.restore();
+    return client.quit();
   });
 
   describe('.close', function() {
@@ -157,9 +159,7 @@ describe('Queue', function() {
       expect(queue.client.options.db).to.be.eql(2);
       expect(queue.eclient.options.db).to.be.eql(2);
 
-      queue.close().catch(function(/*err*/) {
-        // Swallow error.
-      });
+      queue.close();
     });
 
     it('should create a queue with only a hostname', function() {
@@ -279,6 +279,7 @@ describe('Queue', function() {
           var client = new redis();
           return client.hgetall('myQ:q:' + job.id).then(function(result) {
             expect(result).to.not.be.null;
+            return client.quit();
           });
         })
         .then(function() {
@@ -1357,6 +1358,40 @@ describe('Queue', function() {
         expect(err).to.be.eql(notEvenErr);
         failedOnce = true;
         retryQueue.retryJob(job);
+      });
+
+      retryQueue.once('completed', function() {
+        expect(failedOnce).to.be.eql(true);
+        retryQueue.close().then(done);
+      });
+    });
+
+    it('retry a job that fails using job retry method', function(done) {
+      var called = 0;
+      var failedOnce = false;
+      var notEvenErr = new Error('Not even!');
+
+      var retryQueue = utils.buildQueue('retry-test-queue');
+
+      retryQueue.add({ foo: 'bar' }).then(function(job) {
+        expect(job.id).to.be.ok;
+        expect(job.data.foo).to.be.eql('bar');
+      });
+
+      retryQueue.process(function(job, jobDone) {
+        called++;
+        if (called % 2 !== 0) {
+          throw notEvenErr;
+        }
+        jobDone();
+      });
+
+      retryQueue.once('failed', function(job, err) {
+        expect(job).to.be.ok;
+        expect(job.data.foo).to.be.eql('bar');
+        expect(err).to.be.eql(notEvenErr);
+        failedOnce = true;
+        job.retry();
       });
 
       retryQueue.once('completed', function() {

@@ -93,6 +93,7 @@ interface AdvancedSettings {
   guardInterval: number = 5000; // Poll interval for delayed jobs and added jobs.
   retryProcessDelay: number = 5000; // delay before processing next job in case of internal error.
   backoffStrategies: {}; // A set of custom backoff strategies keyed by name.
+  drainDelay: number = 5; // A timeout for when the queue is in drained state (empty waiting for jobs).
 }
 ```
 
@@ -113,6 +114,8 @@ __Warning:__ Do not override these advanced settings unless you understand the i
 `retryProcessDelay`: Time in milliseconds in which to wait before trying to process jobs, in case of a Redis error. Set to a lower value on an unstable Redis connection.
 
 `backoffStrategies`: An object containing custom backoff strategies. The key in the object is the name of the strategy and the value is a function that should return the delay in milliseconds. For a full example see [Patterns](./PATTERNS.md#custom-backoff-strategy).
+
+`drainDelay`: A timeout for when the queue is in `drained` state (empty waiting for jobs). It is used when calling `queue.getNextJob()`, which will pass itto `.brpoplpush` on the Redis client.
 
 ```js
 backoffStrategies: {
@@ -150,6 +153,8 @@ results, as a second argument to the "completed" event.
 If, however, the callback signature does not contain the `done` argument, a promise must be returned to signal job completion. If the promise is rejected, the error will be passed as a second argument to the "failed" event.
 If it is resolved, its value will be the "completed" event's second argument.
 
+You can specify a `concurrency` argument. Bull will then call your handler in parallel respecting this maximum value.
+
 A process function can also be declared as a separate process. This will make a better use of the available CPU cores
 and run the jobs in parallel. This is a perfect way to run blocking code. Just specify an absolute path to a processor module.
 i.e. a file exporting the process function like this:
@@ -161,13 +166,13 @@ module.exports = function(job){
   return value;
 }
 ```
-You can return a value or a promise to signale that the job has been completed.
+You can return a value or a promise to signal that the job has been completed.
 
 
-A name argument can be provided so that multiple process functions can be defined per queue. A named process will only process jobs that matches the given name. If you define multiple named process functions in one Queue the defined concurrency for each process function stacks up for the Queue. See the following examples:
+A `name` argument can be provided so that multiple process functions can be defined per queue. A named process will only process jobs that matches the given name. However, if you define multiple named process functions in one Queue, the defined concurrency for each process function stacks up for the Queue. See the following examples:
 ```js
 /***
- * For each named processor concurrency stacks up, so any of these three process functions
+ * For each named processor, concurrency stacks up, so any of these three process functions
  * can run with a concurrency of 125. To avoid this behaviour you need to create an own queue
  * for each process function.
  */
@@ -185,8 +190,8 @@ const emailQueue = new Queue('email')
 emailQueue.process('sendEmail', 25, sendEmail)
 ```
 
-Specify `*` as the process name will make it the default processor for all named jobs.  
-It frequently used to process all named jobs from one process function:
+Specifying `*` as the process name will make it the default processor for all named jobs.  
+It is frequently used to process all named jobs from one process function:
 ```js
 const differentJobsQueue = new Queue('differentJobsQueue')
 differentJobsQueue.process('*', processFunction)
@@ -214,9 +219,6 @@ queue.process(function(job) { // No done callback here :)
 });
 ```
 
-You can specify a concurrency. Bull will then call your handler in parallel respecting this maximum value.
-
-
 ---
 
 ### Queue#add
@@ -228,6 +230,9 @@ add(name?: string, data: any, opts?: JobOpts): Promise<Job>
 Creates a new job and adds it to the queue. If the queue is empty the job will be executed directly, otherwise it will be placed in the queue and executed as soon as possible.
 
 An optional name can be added, so that only process functions defined for that name will process the job.
+
+**Note:**
+You need to define *processors* for all the named jobs that you add to your queue or the queue will complain that you are missing a processor for the given job, unless you use the ```*``` as job name when defining the processor.
 
 ```typescript
 interface JobOpts{
@@ -263,10 +268,11 @@ interface JobOpts{
 
 ```typescript
 interface RepeatOpts{
-  cron: string; // Cron string
+  cron?: string; // Cron string
   tz?: string, // Timezone
   endDate?: Date | string | number; // End data when the repeat job should stop repeating.
   limit?: number; // Number of times the job should repeat at max.
+  every?: number; // Repeat every millis (cron setting cannot be used together with this setting.)
 }
 ```
 

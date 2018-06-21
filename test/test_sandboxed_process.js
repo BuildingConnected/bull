@@ -9,9 +9,10 @@ var _ = require('lodash');
 
 describe('sandboxed process', function() {
   var queue;
+  var client;
 
   beforeEach(function() {
-    var client = new redis();
+    client = new redis();
     return client.flushdb().then(function() {
       queue = utils.buildQueue('test process', {
         settings: {
@@ -24,10 +25,14 @@ describe('sandboxed process', function() {
   });
 
   afterEach(function() {
-    return queue.close().then(function() {
-      var client = new redis();
-      return client.flushall();
-    });
+    return queue
+      .close()
+      .then(function() {
+        return client.flushall();
+      })
+      .then(function() {
+        return client.quit();
+      });
   });
 
   it('should process and complete', function(done) {
@@ -143,6 +148,34 @@ describe('sandboxed process', function() {
       queue.add({ foo: 'bar4' })
     ]).then(function() {
       queue.process(4, __dirname + '/fixtures/fixture_processor_slow.js');
+    });
+  });
+
+  it('should reuse process with single processors', function(done) {
+    var after = _.after(4, function() {
+      expect(queue.childPool.getAllFree().length).to.eql(1);
+      done();
+    });
+    queue.on('completed', function(job, value) {
+      try {
+        expect(value).to.be.eql(42);
+        expect(
+          Object.keys(queue.childPool.retained).length +
+            queue.childPool.getAllFree().length
+        ).to.eql(1);
+        after();
+      } catch (err) {
+        done(err);
+      }
+    });
+
+    Promise.all([
+      queue.add({ foo: 'bar1' }),
+      queue.add({ foo: 'bar2' }),
+      queue.add({ foo: 'bar3' }),
+      queue.add({ foo: 'bar4' })
+    ]).then(function() {
+      queue.process(__dirname + '/fixtures/fixture_processor_slow.js');
     });
   });
 
