@@ -12,6 +12,7 @@
       KEYS[7] jobId
 
       ARGV[1]  jobId
+	  ARGV[2]  force
       ARGV[2]  lock token
 
      Events:
@@ -22,7 +23,13 @@
 
 local lockKey = KEYS[7] .. ':lock'
 local lock = redis.call("GET", lockKey)
-if not lock then             -- or (lock == ARGV[2])) then
+local force = ARGV[2]
+
+if force then
+	redis.call("DEL", lockKey)
+end
+
+if (not lock) or force then             -- or (lock == ARGV[2])) then
   redis.call("LREM", KEYS[1], 0, ARGV[1])
   redis.call("LREM", KEYS[2], 0, ARGV[1])
   redis.call("ZREM", KEYS[3], ARGV[1])
